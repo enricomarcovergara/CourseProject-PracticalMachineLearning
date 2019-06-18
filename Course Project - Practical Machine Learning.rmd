@@ -1,0 +1,203 @@
+---
+title: "Course Project - Practical Machine Learning"
+author: "Vergara, Enrico Marco"
+date: "June 17, 2019"
+output:
+  rmarkdown::html_document:
+    theme: readable
+---
+##------------------------------------------------------------------------------------------------
+
+```{r setup, include=FALSE, message=FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache = TRUE)
+library(caret)
+library(corrplot)
+library(rpart)
+library(rpart.plot)
+library(rattle)
+```
+
+### I. Overview
+
+#### A. Background
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement â a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways.  
+  
+#### B. Data Definition
+
+The data for this project come from this source: [http://groupware.les.inf.puc-rio.br/har](http://groupware.les.inf.puc-rio.br/har)
+
+**Title:** Weight Lifting Exercises Dataset
+
+**Basic Summary:** This human activity recognition research has traditionally focused on discriminating between different activities, i.e. to predict "which" activity was performed at a specific point in time. The approach we propose for the Weight Lifting Exercises dataset is to investigate "how (well)" an activity was performed by the wearer. The "how (well)" investigation has only received little attention so far, even though it potentially provides useful information for a large variety of applications,such as sports training.
+
+Six young health participants were asked to perform one set of 10 repetitions of the Unilateral Dumbbell Biceps Curl in five different fashions: exactly according to the specification (Class A), throwing the elbows to the front (Class B), lifting the dumbbell only halfway (Class C), lowering the dumbbell only halfway (Class D) and throwing the hips to the front (Class E).
+
+**Source:** *Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013.*
+
+##------------------------------------------------------------------------------------------------
+### II. Data Pre-processing and Correlation Analysis
+
+#### A. Data Loading  
+In this section, the initial processing of data is provided. The first thing to do is to download and load the data frame by storing it into a variable.
+
+```{r loading data}
+url_train <- "http://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+url_test  <- "http://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+pml_train <- read.csv(url(url_train))
+pml_validation  <- read.csv(url(url_test))
+```
+
+#### B. Data Partitioning  
+For the prediction model, the training data is to be splitted into the "ideal" ratio of data partition for training and testing which is 70% as train data and 30% test data. This splitted data will also be used for the computation of the out-of-sample errors.
+
+```{r part}
+set.seed(123456789)
+partition  <- createDataPartition(pml_train$classe, p=0.7, list=FALSE)
+train_set <- pml_train[partition, ]
+test_set  <- pml_train[-partition, ]
+
+dim(train_set)
+dim(test_set)
+```
+
+The training data set is made of **13737 observations** on **160 variables**. On the other hand, the testing data set is composed of **5885 observations** on **160 variables**.
+
+```{r part2}
+str(train_set)
+```
+
+From the summary, it is noticeable that many columns have NA values or blank values on almost every observation. This is an indication of irrelevant featuresm thus it is safe to consider removing them. The behavior is pretty much similar for both testing and training set. Thus what will be applied to training in terms of cleaning will be also applied to testing.
+
+#### C. Data Cleaning  
+##### a. Definitive Variables
+The first seven columns give information about the people who did the test, and also timestamps. This are again irrelevant for the model. So the first thing to consider is removing this variables.
+
+```{r definitive}
+train_set_clean <- train_set[,-c(1:7)]
+test_set_clean <- test_set[,-c(1:7)]
+```
+
+##### b. Near Zero Covariates
+It is highly emphasized that if there are near zero variables in the data. It is just proper to removed them since it only makes the model bias and inaccurate.
+
+```{r near zero}
+nzv <- nearZeroVar(train_set_clean,saveMetrics=TRUE)
+train_set_clean <- train_set_clean[, nzv$nzv==FALSE]
+test_set_clean <- test_set_clean[, nzv$nzv==FALSE]
+nzv
+```
+
+##### c. NA Values
+From the summary, it is very evident that most of the variables are composed on NA values. If large portion of the covariate is just NA values. It is might as well good to consider removing this covariates.
+
+```{r na values}
+allNA <- sapply(train_set_clean, function(x) mean(is.na(x))) > 0.95
+train_set_clean <- train_set_clean[, allNA==FALSE]
+test_set_clean <- test_set_clean[, allNA==FALSE]
+```
+
+#### D. Correlation Analysis
+Lastly, correlation analysis is applied to the partly cleaned data. The goal is to eliminate highly correlated covariates because from the lesson, it is highly emphasized that highly correlated variables don't improve models for the reason that it mask interactions between different features. 
+
+In order to visualize the correlation of each covariates, here is the correlation plot.
+
+```{r corrplot, fig.align="center", fig.height=7.5, fig.width= 10}
+corrplot(cor(train_set_clean[, -53]), order = "FPC", method = "color", type = "upper", tl.cex = 0.8, tl.col = rgb(0, 0, 0), tl.srt=45)
+```
+
+As can be noticed, some of the covariates are highly correlated. For this purpose, highly correlated covariates are defined to have a cut off of at least 0.90 in absolute value. Identified variables will then be excluded from the predictors.
+
+```{r removed corr}
+c <- findCorrelation(abs(cor(train_set_clean[, -53])), cutoff = .90)
+train_set_clean <- train_set_clean[, -c]
+test_set_clean <- test_set_clean[, -c]
+dim(train_set_clean)
+dim(test_set_clean)
+```
+
+There are a total of seven highly correlated variables based on the threshold. After all the cleaning process applied to the original partitioned data set, the number of covariates for the modeling has been reduced from **159 predictors** to only **45 predictors** plus **one outcome variable**.
+
+##------------------------------------------------------------------------------------------------
+### III. Prediction Model Building
+For this project, there will be three algorithm to be used in order to discover the best model to predict the class or fashion of performing the Unilateral Dumbbell Biceps Curl based on the given variables. The three algorithms are:
+
+a. Decision Tree
+b. Random Forests
+c. Gradient Boosting Method
+
+#### A. Decision Tree Algorithm
+A Decision Tree is a supervised learning predictive model that uses a set of binary rules to calculate a target value.  
+Source: *[A Guide to Machine Learning in R for Beginners: Decision Trees](https://medium.com/analytics-vidhya/a-guide-to-machine-learning-in-r-for-beginners-decision-trees-c24dfd490abb)*
+
+```{r decision, fig.align="center", fig.height=7.5, fig.width= 10}
+set.seed(123456789)
+model_decisiontree <- rpart(classe ~ ., data=train_set_clean, method="class")
+fancyRpartPlot(model_decisiontree)
+```
+
+```{r decision2}
+prediction_model_decisiontree <- predict(model_decisiontree, newdata=test_set_clean, type="class")
+cm_model_decisiontree <- confusionMatrix(prediction_model_decisiontree, test_set_clean$classe)
+cm_model_decisiontree
+```
+
+#### B. Random Forest Algorithm
+In Random Forests the idea is to decorrelate the several trees which are generated by the different bootstrapped samples from training Data. And then we simply reduce the Variance in the Trees by averaging them.  
+Source: *[Random Forests in R](https://datascienceplus.com/random-forests-in-r/)*
+
+```{r ranfor, fig.align="center", fig.height=5, fig.width= 7.5}
+set.seed(123456789)
+traincontrol_ranfor <- trainControl(method="cv", number=3, verboseIter=FALSE)
+model_randomforest <- train(classe ~ ., data=train_set_clean, method="rf", trControl=traincontrol_ranfor)
+model_randomforest
+plot(model_randomforest,main="Accuracy of Random Forest Model by Number of Covariates")
+```
+
+```{r ranfor2}
+prediction_model_ranfor <- predict(model_randomforest, newdata=test_set_clean)
+cm_model_ranfor<- confusionMatrix(prediction_model_ranfor, test_set_clean$classe)
+cm_model_ranfor
+```
+
+#### C. Gradient Boosting Method
+The main idea of boosting is to add new models to the ensemble sequentially. At each particular iteration, a new weak, base-learner model is trained with respect to the error of the whole ensemble learnt so far.  
+Source: *[Gradient Boosting Machines](http://uc-r.github.io/gbm_regression)*
+
+```{r gbm, fig.align="center", fig.height=5, fig.width= 7.5}
+set.seed(123456789)
+traincontrol_gbm <- trainControl(method = "repeatedcv", number = 5, repeats = 1)
+model_gbm  <- train(classe ~ ., data=train_set_clean, method = "gbm", trControl = traincontrol_gbm, verbose = FALSE)
+model_gbm
+plot(model_gbm)
+```
+
+```{r gbm2}
+prediction_model_gbm <- predict(model_gbm, newdata=test_set_clean)
+cm_model_gbm <- confusionMatrix(prediction_model_gbm, test_set_clean$classe)
+cm_model_gbm
+```
+
+##------------------------------------------------------------------------------------------------
+### IV. Result Summary and Conclusion
+
+Presented below is the table to summarize the output characteristics of the model created using the different algorithms.
+<center>
+Algorithm | Accuracy | Kappa | 95% CI
+------------------ | ---------------- | ---------------- | ----------------
+Decision Tree | 70.69% | 62.94% | 69.51% - 71.85%
+Random Forest | 99.20% | 98.99% | 98.94% - 99.41%
+Gradient Boosting Method | 95.82% | 94.71% | 95.28% - 96.32%
+</center>
+
+From the result above, it is clear that **Random Forest Algorithm** provided the best predictive model for the class or fashion of performing the Unilateral Dumbbell Biceps Curl based on the given variables.
+
+##------------------------------------------------------------------------------------------------
+### V. Application
+
+This section shows the application of the selected best predictive model (using Random Forest Algorithm) to the given set of testing data for the evaluation exercises.
+
+```{r validation}
+evaluation_prediction <- predict(model_randomforest, newdata=pml_validation)
+evaluation_prediction
+```
